@@ -1,0 +1,156 @@
+---
+title: "Machine_learning_project"
+author: "IMV"
+date: "3/28/2021"
+output:
+  html_document: default 
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+Throughout the document, I will explain step by step how I wrangled the raw data and the reasons for the choices I made. 
+I will answer the questions asked in the exercise:
+1) How you used cross validation?
+2) What you think the expected out of sample error is?
+3) Why you made the choices you did?
+
+Here I load the packages and the training and testing datasets provided in the exercise:
+```{r,echo= T, results='hide'}
+library(caret)
+library(dplyr)
+library(knitr)
+URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+training_ <- read.table(URL,sep=",",header=T) #It is very important to label training_ 
+# and training (next chunk code) differently to assure that the training_ data gets 
+#separated into training and testing datasets properly. 
+
+URL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testing <- read.table(URL2,sep=",",header=T)
+
+```
+
+Interestingly, the testing dataset does not have the variable classe (outcome) and the number of elements in each variable is just 20, very low compared to the training dataset, where the number of elements per variable is 19622. For this reason, I think the testing dataset provided here is not appropriate the test the model and make predictions. I have a different approach. I will use the training dataset to create a testing dataset as follows: 
+```{r, echo= T, results='hide'}
+inTrain <- createDataPartition(y=training_$classe,p=0.75, list=FALSE) #here we use 75% of 
+#the data for training the algorithm.
+dim(inTrain)
+
+#Then, we subset the data into training and testing:
+training <- training_[inTrain,] #This correspond to the 75% of the data partitioned earlier. 
+dim(training)
+testing <- training_[-inTrain,] #This is the 25% we did not include before. 
+dim(testing)
+```
+
+Then, I preprocess both training and testing datasets as follows:
+```{r, echo= T, results='hide'}
+#Here I remove the variables with near to zero variances 
+#in training and testing datasets.
+nsv_training <- nearZeroVar(training,saveMetrics= F, names=TRUE) 
+training <- training[,!colnames(training)%in%nsv_training]
+dim(training) 
+
+nsv_testing <- nearZeroVar(testing,saveMetrics= F, names=TRUE)
+testing <- testing[,!colnames(testing)%in%nsv_testing]
+dim(testing)
+
+#Here I remove the variables with NAs:
+training <- training[ ,colSums(is.na(training)) == 0]
+dim(training)
+testing <- testing[,colSums(is.na(testing)) == 0]
+dim(testing)
+
+#I convert the outcome variable into a factor:
+training$classe <- as.factor(training$classe)
+testing$classe <- as.factor(testing$classe)
+
+#Here I remove some variables I do not consider relevant, 
+#like X, raw_time, cvtd_times
+colnames(training)[1:5]
+# colnames(testing)[1:5]
+training <- training[, -c(1:5)]
+testing <- testing[,-c(1:5)]
+#To know the column number of the outcome variable. 
+which(colnames(training) =="classe") 
+# [1] 54
+
+#We convert the rest of the variables to numeric:
+training[,1:53] <- sapply(training[,1:53],as.numeric)
+testing[,1:53] <- sapply(testing[,1:53],as.numeric)
+```
+
+Here, I test different machine learning algorithm for the training dataset in order to choose the best one. I used k-fold cross validation to evaluate the model performance on different subsets of the training dataset and then I calculated the  average prediction error rate as follows:
+```{r, eval= FALSE}
+
+set.seed(7)
+control <- trainControl(method="cv", number=10)
+
+# Classification and Regression Trees
+set.seed(7)
+fit.cart <- train(classe~., data= training, method="rpart", preProcess=c("range"), trControl = control) 
+# Logistic Regression
+set.seed(7)
+fit.glm <- train(classe~., data= training, method="glm",preProcess=c("range"), 
+                 trControl = control) 
+# Linear Discriminant Analysis
+set.seed(7)
+fit.lda <- train(classe~., data= training, method="lda", preProcess=c("range"), 
+                 trControl = control)
+# Support Vector Machine with Radial Basis Function
+set.seed(7)
+fit.svm <- train(classe~., data= training, method="svmRadial", preProcess=c("range"), 
+                 trControl = control)
+# k-Nearest Neighbors
+set.seed(7)
+fit.knn <- train(classe~., data= training, method="knn", preProcess=c("range"), 
+                 trControl = control)
+# Random Forest 
+set.seed(7)
+fit.rf <- train(classe~., data= training, method="rf", preProcess=c("range"), 
+                trControl = control)
+fit.rf$finalModel
+print(modFit)
+
+# collect resamples. Here we remove glm because it gave an error earlier, so it did not work. 
+results <- resamples(list(CART=fit.cart, LDA=fit.lda, SVM=fit.svm, KNN=fit.knn, RF=fit.rf))
+save(fit.rf, file = "fit.rf")
+save(results, file= "results")
+```
+
+Then, I plotted the results from each algorith to illustrate their accuracy:
+```{r, figures-side, fig.height = 3.5, fig.width = 3.5}
+setwd("~/Desktop/NeuN Analysis") 
+load("fit.rf")
+load("results")
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(results, scales=scales); densityplot(results, scales=scales, pch = "|")
+```
+
+```{r, include=TRUE, eval=TRUE}
+#Here we compare the models:
+summary(results)
+#Statistical significance tests:
+diffs <- diff(results) #difference in model predictions
+table_ <- summary(diffs)[[3]][[2]]#summarize p-values for pair-wise comparisons
+
+Accuracy <- kable(summary(diffs)[[3]][[1]], caption = "Accuracy")
+Accuracy
+Kappa <- kable(summary(diffs)[[3]][[2]], caption = "Kappa")
+Kappa
+```
+
+Here we make predictions with the testing dataset and calculate the out of sample error:
+```{r, echo= TRUE, eval = TRUE}
+#Let's test the model developed in the training dataset with the testing dataset:
+predictions <- predict(fit.rf, newdata=testing)
+
+#Then, we determine if the model worked well or not by using the confusionMatrix() function. We pass the predictions we got (prediction object) and the actual outcome on the testing sample.
+kable(confusionMatrix(predictions,testing$classe)[[4]],digits = 3)
+
+#Here, I compute the out-of-sample error with R2, RMSE and MAE. These are measured in the same scale as the outcome variable, in this case numeric values because these functions do not work with factors.
+kable(digits = 4, data.frame(R2 = R2(as.numeric(predictions), as.numeric(testing$classe)),
+           RMSE = RMSE(as.numeric(predictions), as.numeric(testing$classe)),
+           MAE = MAE(as.numeric(predictions), as.numeric(testing$classe))))
+```
+Overall, these results indicate that the model is highly accurate at predicting the outcome variable. 
